@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>寶可夢餵養中心</title>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/htm@3.1.1/dist/htm.js"></script>
+
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-image: url('./assets/bg.png');
+            background-size: cover;
+            background-position: center;
+            background-attachment: fixed;
+            background-color: #f0f8ff;
+        }
+
+        .poke-shadow {
+            box-shadow: 0 4px 6px -1px rgba(59, 130, 246, 0.5), 0 2px 4px -1px rgba(59, 130, 246, 0.25);
+        }
+
+        @keyframes shake {
+            0% {
+                transform: translate(1px, 1px) rotate(0deg);
+            }
+
+            10% {
+                transform: translate(-1px, -2px) rotate(-1deg);
+            }
+
+            20% {
+                transform: translate(-3px, 0px) rotate(1deg);
+            }
+
+            30% {
+                transform: translate(3px, 2px) rotate(0deg);
+            }
+
+            40% {
+                transform: translate(1px, -1px) rotate(1deg);
+            }
+
+            50% {
+                transform: translate(-1px, 2px) rotate(-1deg);
+            }
+
+            60% {
+                transform: translate(-3px, 1px) rotate(0deg);
+            }
+
+            70% {
+                transform: translate(3px, 1px) rotate(-1deg);
+            }
+
+            80% {
+                transform: translate(-1px, -1px) rotate(1deg);
+            }
+
+            90% {
+                transform: translate(1px, 2px) rotate(0deg);
+            }
+
+            100% {
+                transform: translate(1px, -2px) rotate(-1deg);
+            }
+        }
+
+        .shake {
+            animation: shake 0.3s;
+            animation-iteration-count: infinite;
+        }
+
+        @keyframes pulse-slow {
+
+            0%,
+            100% {
+                opacity: 1;
+                transform: scale(1);
+            }
+
+            50% {
+                opacity: 0.8;
+                transform: scale(1.05);
+            }
+        }
+
+        /* .animate-pulse-slow {
+            animation: pulse-slow 3s ease-in-out infinite;
+        } */
+        .animate-pulse-slow {
+            animation: pulse-slow 3s ease-in-out infinite;
+        }
+
+        @keyframes flash-toggle {
+
+            0%,
+            49.9% {
+                opacity: 1;
+            }
+
+            50%,
+            100% {
+                opacity: 0;
+            }
+        }
+
+        .animate-flash-toggle {
+            animation: flash-toggle linear infinite;
+        }
+
+        /* 寶可夢進化經典純白剪影濾鏡 */
+        .evolution-silhouette {
+            filter: brightness(0) invert(1) drop-shadow(0 0 20px rgba(255, 255, 255, 0.8));
+        }
+
+        @keyframes spin-slow {
+            from {
+                transform: rotate(0deg);
+            }
+
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .animate-spin-slow {
+            animation: spin-slow 2s linear infinite;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="root"></div>
+
+    <script type="text/javascript">
+        const { useState, useEffect, useRef, useCallback, createElement } = React;
+
+        // 初始化 htm，將其綁定至 React.createElement
+        const html = htm.bind(createElement);
+
+        // --- Configuration ---
+        const GAS_DEPLOY_URL = 'https://script.google.com/macros/s/AKfycbwn4n6gw4szMfnNUWn5vIky1t90_02Z127zVh1SjtxYw5Jo7zFOWiWecSfajff3GTnR/exec';
+        const USE_LOCAL_AUDIO = true;
+
+        // --- Audio System ---
+        const AudioController = {
+            homeBgm: new Audio('assets/home.mp3'),
+            evoBgm: new Audio('assets/evolution.mp3'),
+            bgmTimer: null,
+
+            init() {
+                this.homeBgm.loop = true;
+                this.homeBgm.volume = 0.15; // 降低 BGM 避免蓋過點擊聲
+                this.evoBgm.loop = true;
+                this.evoBgm.volume = 0.4;
+            },
+            playClick() {
+                // 直接實例化短音效，確保連點時每個 Promise 獨立執行
+                const sfx = new Audio('assets/click.mp3');
+                sfx.volume = 1.0;
+                sfx.play().catch(e => console.warn("SFX Play Blocked:", e));
+            },
+            playHomeBgm(play = true) {
+                if (this.bgmTimer) clearTimeout(this.bgmTimer);
+                if (play) {
+                    // 移除 currentTime = 0，實現中斷後續撥
+                    this.homeBgm.play().catch(() => { });
+                } else {
+                    this.homeBgm.pause();
+                }
+            },
+            playEvoBgm(play = true) {
+                if (play) {
+                    if (this.bgmTimer) clearTimeout(this.bgmTimer);
+                    this.homeBgm.pause(); // 進化啟動，立即強制關閉 BGM
+                    this.evoBgm.currentTime = 0;
+                    this.evoBgm.play().catch(() => { });
+                } else {
+                    this.evoBgm.pause();
+                }
+            },
+            playSuccess() {
+                this.playEvoBgm(false);
+                const sfx = new Audio('assets/victory1.mp3');
+                sfx.play().catch(() => { });
+                // 結束進化事件，慢 5 秒再開啟 home.mp3
+                this.bgmTimer = setTimeout(() => this.playHomeBgm(true), 5000);
+            },
+            playFail() {
+                this.playEvoBgm(false);
+                const sfx = new Audio('assets/fail.mp3');
+                sfx.play().catch(() => { });
+                // 結束進化事件，慢 5 秒再開啟 home.mp3
+                this.bgmTimer = setTimeout(() => this.playHomeBgm(true), 5000);
+            }
+        };
+        AudioController.init();
+
+        // --- Utility Functions ---
+        const getStageIndex = (energy, thresholds) => {
+            for (let i = 0; i < thresholds.length; i++) {
+                if (energy < thresholds[i]) return i;
+            }
+            return thresholds.length - 1;
+        };
+
+        // --- Main Application ---
+        function App() {
+            const [data, setData] = useState({ students: [], pokemons: [] });
+            const [loading, setLoading] = useState(true);
+            const [syncing, setSyncing] = useState(false);
+            const [selectedStudent, setSelectedStudent] = useState(null);
+            const [newStudentName, setNewStudentName] = useState('');
+
+            const [feedSeq, setFeedSeq] = useState({ active: false, chunksLeft: 0, amount: 0, remainder: 0, originalState: null });
+            const [qte, setQte] = useState({ active: false, clicks: 0, timeLeft: 5, targetStage: 0 });
+
+            const fetchAllData = useCallback(async () => {
+                setSyncing(true);
+                try {
+                    const res = await fetch(`${GAS_DEPLOY_URL}?action=getAll&t=${new Date().getTime()}`);
+                    const json = await res.json();
+                    if (json.status === 200) setData(json.data);
+                    else alert('API Error: ' + json.data.error);
+                } catch (err) {
+                    alert('Network Error');
+                } finally {
+                    setLoading(false);
+                    setSyncing(false);
+                }
+            }, []);
+
+            useEffect(() => {
+                if (GAS_DEPLOY_URL === 'YOUR_GAS_WEB_APP_URL_HERE') {
+                    alert("請先替換 GAS_DEPLOY_URL");
+                    setLoading(false);
+                    return;
+                }
+                fetchAllData();
+
+                // [INSERT] 監聽首次點擊以啟動背景音樂 (解決瀏覽器限制)
+                const startBgmOnFirstInteract = () => {
+                    AudioController.playHomeBgm(true);
+                    window.removeEventListener('click', startBgmOnFirstInteract);
+                };
+                window.addEventListener('click', startBgmOnFirstInteract);
+
+                return () => window.removeEventListener('click', startBgmOnFirstInteract);
+            }, [fetchAllData]);
+
+            const handleAddStudent = async () => {
+                if (!newStudentName.trim()) return;
+                setLoading(true);
+                try {
+                    const res = await fetch(GAS_DEPLOY_URL, {
+                        method: 'POST',
+                        body: JSON.stringify({ action: 'addStudent', name: newStudentName })
+                    });
+                    const json = await res.json();
+                    if (json.status === 200) {
+                        setNewStudentName('');
+                        await fetchAllData();
+                    } else alert(json.data.error);
+                } catch (e) { alert('新增失敗'); }
+                setLoading(false);
+            };
+
+            const handleDeleteStudent = async (id) => {
+                if (!confirm('確定要刪除這位小朋友並釋放寶可夢嗎？')) return;
+
+                // Optimistic UI: 優先移除前端 State，實現零延遲 UI 回饋
+                setData(prev => ({
+                    ...prev,
+                    students: prev.students.filter(student => student.id !== id)
+                }));
+                setSelectedStudent(null);
+                setLoading(true);
+
+                try {
+                    await fetch(GAS_DEPLOY_URL, {
+                        method: 'POST',
+                        body: JSON.stringify({ action: 'deleteStudent', id })
+                    });
+                    // 由於 State 已更新，可省略 await fetchAllData() 節省一次 Request。
+                    // 若需確保與遠端絕對同步，可保留該行。
+                } catch (e) {
+                    console.error('Delete failed, rolling back...', e);
+                    // API 失敗時，重新拉取遠端資料以復原 UI
+                    await fetchAllData();
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const handleUpdateStudentName = async (id, oldName) => {
+                const newName = prompt('請輸入新的小朋友名稱：', oldName);
+                if (!newName || newName.trim() === '' || newName === oldName) return;
+
+                // Optimistic UI: 直接更新 Modal 狀態與列表資料
+                setSelectedStudent(prev => ({ ...prev, name: newName.trim() }));
+                setData(prev => ({
+                    ...prev,
+                    students: prev.students.map(s => s.id === id ? { ...s, name: newName.trim() } : s)
+                }));
+
+                try {
+                    await fetch(GAS_DEPLOY_URL, {
+                        method: 'POST',
+                        body: JSON.stringify({ action: 'updateStudentName', id, name: newName.trim() })
+                    });
+                } catch (e) {
+                    console.error('Update name failed, rolling back...', e);
+                    // 若 API 失敗，重新拉取遠端資料以復原 UI
+                    await fetchAllData();
+                }
+            };
+
+            const handleUpdateEnergyAPI = async (id, energy, feedableEnergy) => {
+                try {
+                    await fetch(GAS_DEPLOY_URL, {
+                        method: 'POST',
+                        body: JSON.stringify({ action: 'updateEnergy', id, energy, feedableEnergy })
+                    });
+                } catch (e) { console.error('Update fail', e); }
+            };
+
+            const getPokemonData = (pokemonName) => data.pokemons.find(p => p.mainName === pokemonName);
+
+            const startFeeding = () => {
+                if (!selectedStudent || selectedStudent.feedableEnergy <= 0) return;
+                AudioController.playClick();
+
+                const total = selectedStudent.feedableEnergy;
+                const amount = Math.floor(total / 5);
+                const remainder = total % 5;
+
+                setFeedSeq({
+                    active: true,
+                    chunksLeft: 5,
+                    amount,
+                    remainder,
+                    originalState: { energy: selectedStudent.energy, feedable: selectedStudent.feedableEnergy }
+                });
+            };
+
+            const processFeedClick = () => {
+                // [MODIFIED] 音效觸發順序提前，確保使用者點擊瞬間即有回饋
+                AudioController.playClick();
+
+                if (!feedSeq.active || !selectedStudent) return;
+
+                const poke = getPokemonData(selectedStudent.pokemonName);
+                let feedAmount = feedSeq.amount;
+
+                if (feedSeq.chunksLeft === 1) feedAmount += feedSeq.remainder;
+
+                const currentStage = getStageIndex(selectedStudent.energy, poke.thresholds);
+                const nextEnergy = selectedStudent.energy + feedAmount;
+                const nextFeedable = selectedStudent.feedableEnergy - feedAmount;
+                const nextStage = getStageIndex(nextEnergy, poke.thresholds);
+
+                if (nextStage > currentStage) {
+                    setFeedSeq(prev => ({ ...prev, active: false }));
+                    // 進化啟動前，確保先執行 EvoBgm (內含暫停 HomeBgm 邏輯)
+                    AudioController.playEvoBgm(true);
+                    setQte({ active: true, clicks: 0, timeLeft: 5, targetStage: nextStage });
+                    setSelectedStudent({ ...selectedStudent, energy: nextEnergy, feedableEnergy: nextFeedable });
+                    return;
+                }
+
+                const updatedStudent = { ...selectedStudent, energy: nextEnergy, feedableEnergy: nextFeedable };
+                setSelectedStudent(updatedStudent);
+
+                setData(prev => ({
+                    ...prev,
+                    students: prev.students.map(s => s.id === updatedStudent.id ? updatedStudent : s)
+                }));
+
+                if (feedSeq.chunksLeft === 1) {
+                    setFeedSeq({ active: false, chunksLeft: 0, amount: 0, remainder: 0, originalState: null });
+                    handleUpdateEnergyAPI(updatedStudent.id, nextEnergy, nextFeedable);
+                } else {
+                    setFeedSeq(prev => ({ ...prev, chunksLeft: prev.chunksLeft - 1 }));
+                }
+            };
+
+            useEffect(() => {
+                let timer;
+                if (qte.active && qte.timeLeft > 0) {
+                    timer = setInterval(() => {
+                        setQte(prev => {
+                            if (prev.timeLeft <= 1) {
+                                clearInterval(timer);
+                                handleQteResult(false);
+                                return { ...prev, timeLeft: 0 };
+                            }
+                            return { ...prev, timeLeft: prev.timeLeft - 1 };
+                        });
+                    }, 1000);
+                }
+                return () => clearInterval(timer);
+            }, [qte.active, qte.timeLeft]);
+
+            const handleQteClick = () => {
+                if (!qte.active) return;
+                AudioController.playClick();
+                setQte(prev => {
+                    const newClicks = prev.clicks + 1;
+                    if (newClicks >= 8) {
+                        handleQteResult(true);
+                    }
+                    return { ...prev, clicks: newClicks };
+                });
+            };
+
+            const handleQteResult = (success) => {
+                setQte(prev => ({ ...prev, active: false }));
+                if (success) {
+                    AudioController.playSuccess();
+                    const updatedStudent = { ...selectedStudent };
+                    setData(prev => ({
+                        ...prev,
+                        students: prev.students.map(s => s.id === updatedStudent.id ? updatedStudent : s)
+                    }));
+
+                    if (feedSeq.chunksLeft > 1) {
+                        setFeedSeq(prev => ({ ...prev, active: true, chunksLeft: prev.chunksLeft - 1 }));
+                    } else {
+                        handleUpdateEnergyAPI(updatedStudent.id, updatedStudent.energy, updatedStudent.feedableEnergy);
+                        setFeedSeq({ active: false, chunksLeft: 0, amount: 0, remainder: 0, originalState: null });
+                    }
+                } else {
+                    AudioController.playFail();
+                    const rollback = feedSeq.originalState;
+                    const revertedStudent = { ...selectedStudent, energy: rollback.energy, feedableEnergy: rollback.feedable };
+                    setSelectedStudent(revertedStudent);
+                    setData(prev => ({
+                        ...prev,
+                        students: prev.students.map(s => s.id === revertedStudent.id ? revertedStudent : s)
+                    }));
+                    setFeedSeq({ active: false, chunksLeft: 0, amount: 0, remainder: 0, originalState: null });
+                    handleUpdateEnergyAPI(revertedStudent.id, rollback.energy, rollback.feedable);
+                    alert('進化失敗！精華能量流失，請重新累積再挑戰。');
+                }
+            };
+
+            // if (loading && data.students.length === 0) {
+            //     return html`<div className="flex justify-center items-center h-screen font-bold text-xl text-blue-600">載入中...</div>`;
+            // }
+
+            return html`
+                <div className="container mx-auto p-4 max-w-5xl">
+                    <div className="flex justify-between items-center mb-6 bg-blue-500 text-white p-4 rounded-xl shadow-md">
+                        <h1 className="text-2xl font-black tracking-widest flex items-center gap-2">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="3" /><line x1="12" y1="2" x2="12" y2="9" /><line x1="12" y1="15" x2="12" y2="22" /><line x1="22" y1="12" x2="15" y2="12" /><line x1="9" y1="12" x2="2" y2="12" /></svg>
+                            寶可夢餵養中心
+                        </h1>
+                        <button onClick=${fetchAllData} className="opacity-30 hover:opacity-100 transition-opacity p-2">
+                            <svg className=${`w-5 h-5 ${syncing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                        </button>
+                    </div>
+
+                    <div className="mb-8 flex gap-2">
+                        <input
+                            type="text"
+                            value=${newStudentName}
+                            onChange=${e => setNewStudentName(e.target.value)}
+                            placeholder="輸入小朋友名字"
+                            className="border-2 border-blue-300 rounded-lg p-2 flex-grow focus:outline-none focus:border-blue-500 font-bold"
+                        />
+                        <button onClick=${handleAddStudent} disabled=${loading} className="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-6 rounded-lg shadow-md transition-colors">
+                            新增配對
+                        </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        ${data.students.map(student => {
+                const poke = getPokemonData(student.pokemonName);
+                const stageIndex = poke ? getStageIndex(student.energy, poke.thresholds) : 0;
+                const imageUrl = poke ? poke.images[stageIndex] : '';
+
+                return html`
+                                <div key=${student.id} onClick=${() => setSelectedStudent(student)}
+                                    className="relative bg-white rounded-2xl p-4 poke-shadow cursor-pointer hover:-translate-y-1 transition-transform border-2 border-transparent hover:border-blue-400 flex flex-col items-center">
+                                    
+                                    ${student.feedableEnergy > 0 && html`
+                                        <span className="absolute top-2 right-2 bg-red-500 text-white text-xs font-bold px-2 py-1 rounded-full animate-bounce z-10">!</span>
+                                    `}
+
+                                    <div className="w-24 h-24 bg-blue-50 rounded-full flex items-center justify-center mb-3 overflow-hidden border-4 border-blue-100 relative">
+                                        ${imageUrl ? html`<img src=${imageUrl} alt=${poke?.mainName} className="w-full h-full object-cover" />` : html`<div className="text-gray-400">?</div>`}
+                                    </div>
+                                    <h2 className="text-xl font-black text-gray-800">${student.name}</h2>
+                                    <div className="flex flex-col items-center">
+                                        <p className="text-md font-bold text-gray-600 mt-1">
+                                            ${poke ? poke.stageNames[stageIndex] : '載入中...'}
+                                        </p>
+                                    </div>
+                                    <div className="w-full mt-3 bg-gray-200 rounded-full h-3 overflow-hidden">
+                                        <div className="bg-blue-500 h-3" style=${{ width: `${Math.min(100, (student.energy / (poke?.thresholds[4] || 1)) * 100)}%` }}></div>
+                                    </div>
+                                </div>
+                            `;
+            })}
+                    </div>
+
+                    ${selectedStudent && !qte.active && (() => {
+                    const poke = getPokemonData(selectedStudent.pokemonName);
+                    const stageIndex = poke ? getStageIndex(selectedStudent.energy, poke.thresholds) : 0;
+                    const currentStageImg = poke ? poke.images[stageIndex] : '';
+                    const currentStageName = poke ? poke.stageNames[stageIndex] : '未知階段';
+
+                    return html`
+                            <div className="fixed inset-0 bg-black bg-opacity-70 flex justify-center items-center z-40 p-4 backdrop-blur-sm">
+                                <div className="bg-white rounded-3xl w-full max-w-lg p-8 relative shadow-2xl border-4 border-blue-400">
+                                    <button onClick=${() => { setSelectedStudent(null); setFeedSeq({ active: false, chunksLeft: 0 }); }} className="absolute top-4 right-4 text-gray-400 hover:text-gray-700 transition-colors">
+                                        <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                    </button>
+
+                                    <div className="flex flex-col items-center mb-6">
+                                        <div className="w-48 h-48 bg-gradient-to-b from-blue-50 to-white rounded-full flex items-center justify-center mb-4 overflow-hidden border-8 border-blue-100 shadow-inner">
+                                            <img src=${currentStageImg} alt=${currentStageName} className="w-40 h-40 object-contain animate-pulse-slow" />
+                                        </div>
+                                        <h3 className="text-xl font-bold text-blue-400 tracking-tighter uppercase mb-1">Current Evolution</h3>
+                                        <h2 className="text-4xl font-black text-gray-800 mb-1">${currentStageName}</h2>
+                                        <div className="flex items-center gap-2">
+                                            <p className="text-lg font-bold text-gray-400">所屬學生：${selectedStudent.name}</p>
+                                            <button 
+                                                onClick=${() => handleUpdateStudentName(selectedStudent.id, selectedStudent.name)} 
+                                                className="text-gray-400 hover:text-blue-500 transition-colors p-1 bg-gray-100 hover:bg-blue-50 rounded-md"
+                                                title="編輯名稱"
+                                            >
+                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-blue-50 rounded-2xl p-6 mb-6 border-2 border-blue-100 shadow-sm">
+                                        <div className="flex justify-between items-center mb-4">
+                                            <span className="font-bold text-blue-800 text-lg">目前精華能量</span>
+                                            <span className="font-black text-blue-600 text-3xl">${selectedStudent.energy}</span>
+                                        </div>
+                                        <div className="w-full bg-gray-200 rounded-full h-4 mb-4">
+                                            <div className="bg-blue-500 h-4 rounded-full transition-all duration-500" style=${{ width: `${Math.min(100, (selectedStudent.energy / (poke?.thresholds?.[4] || 1)) * 100)}%` }}></div>
+                                        </div>
+                                        <div className="flex justify-between items-center">
+                                            <span className="font-bold text-green-800 text-lg">可餵養剩餘</span>
+                                            <span className="font-black text-green-500 text-3xl">${selectedStudent.feedableEnergy}</span>
+                                        </div>
+                                    </div>
+
+                                    <div className="flex flex-col gap-4">
+                                        ${selectedStudent.feedableEnergy > 0 && !feedSeq.active && html`
+                                            <button onClick=${startFeeding} className="bg-green-500 hover:bg-green-600 text-white font-black py-5 rounded-2xl shadow-lg text-2xl transform active:scale-95 transition-all">
+                                                開始餵養
+                                            </button>
+                                        `}
+                                        ${feedSeq.active && html`
+                                            <button onClick=${processFeedClick} className="bg-yellow-400 hover:bg-yellow-500 text-gray-900 font-black py-5 rounded-2xl shadow-xl text-3xl shake border-b-8 border-yellow-600">
+                                                點擊注入能量 (${5 - feedSeq.chunksLeft + 1}/5)
+                                            </button>
+                                        `}
+                                    </div>
+
+                                    <div className="mt-8 pt-4 border-t-2 border-dashed border-gray-200 text-center">
+                                        <button onClick=${() => handleDeleteStudent(selectedStudent.id)} className="text-red-300 font-bold hover:text-red-500 transition-colors">
+                                            釋放此寶可夢 (刪除資料)
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                })()}
+
+                ${qte.active && (() => {
+                    const poke = getPokemonData(selectedStudent.pokemonName);
+                    // 取得當前階段與下一階段的圖片
+                    const currentImg = poke ? poke.images[Math.max(0, qte.targetStage - 1)] : '';
+                    const targetImg = poke ? poke.images[qte.targetStage] : '';
+
+                    // 動態計算閃爍速度：隨點擊次數加快 (從 0.6 秒遞減至 0.1 秒)
+                    const flashSpeed = Math.max(0.1, 0.6 - (qte.clicks * 0.06));
+
+                    // 移除 HTML 註解避免 htm 解析器崩潰
+                    return html`
+                            <div className="fixed inset-0 bg-black bg-opacity-95 flex flex-col justify-center items-center z-50 text-white p-4 select-none">
+                                <h1 className="text-5xl font-black mb-8 text-yellow-400 tracking-widest animate-pulse">進化中...</h1>
+                                
+                                <div className="relative w-64 h-64 mb-10 flex justify-center items-center">
+                                    <img src=${targetImg} className="absolute inset-0 w-full h-full object-contain evolution-silhouette" />
+                                    <img src=${currentImg} className="absolute inset-0 w-full h-full object-contain evolution-silhouette animate-flash-toggle" style=${{ animationDuration: `${flashSpeed}s` }} />
+                                </div>
+
+                                <p className="text-2xl font-bold mb-8">連擊按鈕注入能量！剩餘時間: <span className="text-red-400 font-black text-3xl">${qte.timeLeft}</span> 秒</p>
+
+                                <button
+                                    onClick=${handleQteClick}
+                                    className="w-48 h-48 bg-gradient-to-b from-red-500 to-red-700 rounded-full border-8 border-yellow-400 shadow-[0_0_50px_rgba(250,204,21,0.8)] flex items-center justify-center active:scale-95 transition-transform"
+                                >
+                                    <span className="text-5xl font-black drop-shadow-lg">${qte.clicks} / 8</span>
+                                </button>
+                            </div>
+                        `;
+                })()}
+
+                ${loading && html`
+                    <div className="fixed inset-0 bg-white bg-opacity-90 backdrop-blur-md flex flex-col justify-center items-center z-[100] transition-opacity duration-300">
+                        <div className="relative w-48 h-48 mb-4">
+                            <img 
+                                src="https://media.tenor.com/8wFJ-71VNMUAAAAj/pokemon-%E5%AF%B6%E5%8F%AF%E5%A4%A2.gif" 
+                                className="w-full h-full object-contain drop-shadow-xl" 
+                                alt="Loading..."
+                            />
+                        </div>
+                        <h2 className="text-3xl font-black text-blue-600 tracking-widest animate-pulse">連線同步中...</h2>
+                        <p className="text-md font-bold text-gray-500 mt-2">正在與寶可夢中心傳輸資料</p>
+                    </div>
+                `}
+
+                </div>
+            `;
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(html`<${App} />`);
+    </script>
+</body>
+
+</html>
